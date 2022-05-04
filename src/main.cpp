@@ -1,9 +1,10 @@
 /* Author:        Hans Christian Diekmann
- * Last update:   03.05.2022
+ * Last update:   04.05.2022
+ * Initial start: 03.05.2022
  *
  * Function:
- * 1. HTCC-AB01 board, as a battery powered GPS node can read its battery voltage and transmits the reading via LoRa (chirp spread spectrum).
- * 2. Acquire the current GPS coordinates, altitude and speed and tansmitt the values via LoRa peer-to-peer.
+ * 1. HTCC-AB01 board, as a battery powered GPS node can read its battery voltage and transmits the reading via LoRa peer-to-peer.
+ * 2. Acquire the current GPS coordinates, altitude and velocity and tansmitt the values via LoRa (chirp spread spectrum).
  * 
  * Description:
  * 1. Only hardware layer communication (P2P), no LoRaWAN protocol;
@@ -36,14 +37,8 @@
 #define LORA_FIX_LENGTH_PAYLOAD_ON                  false
 #define LORA_IQ_INVERSION_ON                        false
 #define RX_TIMEOUT_VALUE                            1000
-#define BUFFER_SIZE                                 80 // Define the payload size here
+#define BUFFER_SIZE                                 80        // set payload size here
 #define GPS_BAUD                                    9600
-
-TinyGPSPlus gps;
-softSerial gpsSerial(GPIO3 /*TX pin*/, GPIO2 /*RX pin*/);
-static RadioEvents_t RadioEvents;
-void OnTxDone( void );
-void OnTxTimeout( void );
 
 typedef enum
 {
@@ -52,18 +47,26 @@ typedef enum
     GetLocation,
     TX
 }States_t;
+
 States_t state;
+TinyGPSPlus gps;
+static softSerial gpsSerial(GPIO3 /*TX pin*/, GPIO2 /*RX pin*/);
+static RadioEvents_t RadioEvents;
+
+void OnTxDone( void );
+void OnTxTimeout( void );
 
 char txPacket[BUFFER_SIZE];
 bool sleepMode = false;
-int16_t rssi,rxSize;
+int16_t rssi;
 uint16_t voltage,latitude,longitude,altitude,velocity;
+uint8_t noOfSatellites;
 
 void setup() {
     Serial.begin(115200);
-    gpsSerial.begin(GPS_BAUD); // gps UART (GPIO 2 & 3)
+    gpsSerial.begin(GPS_BAUD);
     voltage = 0;
-    rssi=0;
+    rssi = 0;
 
     RadioEvents.TxDone = OnTxDone;
     RadioEvents.TxTimeout = OnTxTimeout;
@@ -74,10 +77,8 @@ void setup() {
                                    LORA_PREAMBLE_LENGTH, LORA_FIX_LENGTH_PAYLOAD_ON,
                                    true, 0, 0, LORA_IQ_INVERSION_ON, 3000 );
 
-    state=ReadVoltage;
+    state = ReadVoltage;
 }
-
-
 
 void loop()
 {
@@ -90,9 +91,9 @@ void Main(){
     {
       case TX:
       {
+        turnOnRGB(COLOR_RXWINDOW2, 0); //yellow LED when starting TX
         sprintf(txPacket,"Bat:%d,Lat:%d,Lon:%d,Alt:%d,Vel:%d", voltage,latitude,longitude,altitude,velocity);
-        turnOnRGB(COLOR_SEND,0);
-        Serial.printf("\r\nsending packet \"%s\" , length %d\r\n",txPacket, strlen(txPacket));
+        Serial.printf("\r\nSending packet: \"%s\" , Length: %d\r\n",txPacket, strlen(txPacket));
         Radio.Send( (uint8_t *)txPacket, strlen(txPacket) );
         state = LOWPOWER;
         break;
@@ -102,7 +103,7 @@ void Main(){
         lowPowerHandler();
         delay(100);
         turnOffRGB();
-        delay(2000);  //LowPower time
+        delay(2000);  // LowPower time
         state = ReadVoltage; 
         break;
       }
@@ -117,31 +118,26 @@ void Main(){
       }
       case GetLocation:
       {
-        while (gpsSerial.available())     // check for gps data
+        while (gpsSerial.available())     // check serial for new gps data
         {
           if (gps.encode(gpsSerial.read()))   // encode gps data
           {
-            Serial.print("SATS: ");
-            Serial.println(gps.satellites.value());
-            Serial.print("LAT: ");
+            noOfSatellites = gps.satellites.value();
             latitude = gps.location.lat();
-            Serial.println(gps.location.lat(), 6);
+            longitude = gps.location.lng();
+            altitude = gps.altitude.meters();
+            velocity = gps.speed.mps();
+
+            Serial.print("SATS: ");
+            Serial.println(noOfSatellites);
+            Serial.print("LAT: ");
+            Serial.println(latitude, 6);
             Serial.print("LONG: ");
-            Serial.println(gps.location.lng(), 6);
+            Serial.println(longitude, 6);
             Serial.print("ALT: ");
-            Serial.println(gps.altitude.meters());
+            Serial.println(altitude);
             Serial.print("SPEED: ");
-            Serial.println(gps.speed.mps());
-      
-            Serial.print("Date: ");
-            Serial.print(gps.date.day()); Serial.print("/");
-            Serial.print(gps.date.month()); Serial.print("/");
-            Serial.println(gps.date.year());
-      
-            Serial.print("Hour: ");
-            Serial.print(gps.time.hour()); Serial.print(":");
-            Serial.print(gps.time.minute()); Serial.print(":");
-            Serial.println(gps.time.second());
+            Serial.println(velocity);
             Serial.println("---------------------------");
             delay(5000);
           }
@@ -156,13 +152,14 @@ void Main(){
 
 void OnTxDone( void )
 {
-  Serial.print("TX done!");
-  turnOnRGB(0,0);
+  Serial.print("Payload sent");
+  turnOnRGB(COLOR_RECEIVED,0); // green LED when sent
 }
 
 void OnTxTimeout( void )
 {
+    turnOnRGB(COLOR_SEND,0); // red LED when timeout occurred
     Radio.Sleep( );
-    Serial.print("TX Timeout......");
+    Serial.print("TX Timeout");
     state = ReadVoltage;
 }
