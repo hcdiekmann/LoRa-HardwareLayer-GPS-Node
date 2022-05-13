@@ -37,7 +37,7 @@
 #define LORA_FIX_LENGTH_PAYLOAD_ON                  false
 #define LORA_IQ_INVERSION_ON                        false
 #define RX_TIMEOUT_VALUE                            1000
-#define BUFFER_SIZE                                 80        // set payload size here
+#define BUFFER_SIZE                                 60        // set payload size here
 #define GPS_BAUD                                    9600
 
 typedef enum
@@ -48,23 +48,29 @@ typedef enum
     TX
 }States_t;
 
-States_t state;
+States_t state = ReadVoltage;
 TinyGPSPlus gps;
 static softSerial gpsSerial(GPIO3 /*TX pin*/, GPIO2 /*RX pin*/);
 static RadioEvents_t RadioEvents;
 
+uint32_t BoardGetBatteryVoltage( void );
 void OnTxDone( void );
 void OnTxTimeout( void );
+void Main( );
 
 char txPacket[BUFFER_SIZE];
 bool sleepMode = false;
 int16_t rssi;
-uint16_t voltage,latitude,longitude,altitude,velocity;
+uint16_t voltage;
 uint8_t noOfSatellites;
+float latitude,longitude,alti,velocity;
 
 void setup() {
     Serial.begin(115200);
+    Serial.println("Starting NODE");
     gpsSerial.begin(GPS_BAUD);
+    pinMode(GPIO6, OUTPUT);
+    digitalWrite(GPIO6, HIGH);
     voltage = 0;
     rssi = 0;
 
@@ -77,7 +83,6 @@ void setup() {
                                    LORA_PREAMBLE_LENGTH, LORA_FIX_LENGTH_PAYLOAD_ON,
                                    true, 0, 0, LORA_IQ_INVERSION_ON, 3000 );
 
-    state = ReadVoltage;
 }
 
 void loop()
@@ -92,7 +97,13 @@ void Main(){
       case TX:
       {
         turnOnRGB(COLOR_RXWINDOW2, 0); //yellow LED when starting TX
-        sprintf(txPacket,"Bat:%d,Lat:%d,Lon:%d,Alt:%d,Vel:%d", voltage,latitude,longitude,altitude,velocity);
+        char str_lat[8],str_lon[8],str_alt[8],str_vel[8];
+        /* mininum width 5, 2 is dec precision, float value is copied into str_var*/
+        dtostrf(latitude, 5, 2, str_lat);
+        dtostrf(longitude, 5, 2, str_lon);
+        dtostrf(alti, 5, 2, str_alt);
+        dtostrf(velocity, 5, 2, str_vel);        
+        sprintf(txPacket,"Bat:%d,Lat:%s,Lon:%s,Alt:%s,Vel:%s", voltage,str_lat,str_lon,str_alt,str_vel);
         Serial.printf("\r\nSending packet: \"%s\" , Length: %d\r\n",txPacket, strlen(txPacket));
         Radio.Send( (uint8_t *)txPacket, strlen(txPacket) );
         state = LOWPOWER;
@@ -103,16 +114,14 @@ void Main(){
         lowPowerHandler();
         delay(100);
         turnOffRGB();
-        delay(2000);  // LowPower time
-        state = ReadVoltage; 
+        delay(5000);  // LowPower time
+        state = ReadVoltage;
         break;
       }
       case ReadVoltage:
       {
-        pinMode(VBAT_ADC_CTL,OUTPUT);   //Board, BoardPlus, etc. variants have external 10K VDD pullup resistor connected to GPIO7 (USER_KEY / VBAT_ADC_CTL) pin
-        digitalWrite(VBAT_ADC_CTL,LOW);
-        voltage = analogRead(ADC)*2;
-        pinMode(VBAT_ADC_CTL, INPUT);
+        voltage = BoardGetBatteryVoltage();
+        Serial.printf("\nBattery: %d\n", voltage);
         state = GetLocation;
         break;
       }
@@ -120,26 +129,26 @@ void Main(){
       {
         while (gpsSerial.available())     // check serial for new gps data
         {
-          if (gps.encode(gpsSerial.read()))   // encode gps data
+          gps.encode(gpsSerial.read()); // encode gps data
+          if (gps.location.isUpdated())   
           {
             noOfSatellites = gps.satellites.value();
             latitude = gps.location.lat();
             longitude = gps.location.lng();
-            altitude = gps.altitude.meters();
+            alti = gps.altitude.meters();
             velocity = gps.speed.mps();
 
             Serial.print("SATS: ");
             Serial.println(noOfSatellites);
             Serial.print("LAT: ");
-            Serial.println(latitude, 6);
+            Serial.println(latitude);
             Serial.print("LONG: ");
-            Serial.println(longitude, 6);
+            Serial.println(longitude);
             Serial.print("ALT: ");
-            Serial.println(altitude);
+            Serial.println(alti);
             Serial.print("SPEED: ");
             Serial.println(velocity);
             Serial.println("---------------------------");
-            delay(5000);
           }
         }
         state = TX;
@@ -148,6 +157,28 @@ void Main(){
       default:
         break;
     }
+}
+
+/*  get the BatteryVoltage in mV. */
+uint32_t BoardGetBatteryVoltage(void)
+{
+    float temp = 0;
+    uint16_t volt;
+    uint8_t pin;
+    pin = ADC;
+#if defined(CubeCell_Board) || defined(CubeCell_Capsule) || defined(CubeCell_BoardPlus) || defined(CubeCell_BoardPRO) || defined(CubeCell_GPS) || defined(CubeCell_HalfAA)
+    //Board, BoardPlus, etc. variants have external 10K VDD pullup resistor connected to GPIO7 (USER_KEY / VBAT_ADC_CTL) pin
+    pinMode(VBAT_ADC_CTL, OUTPUT);
+    digitalWrite(VBAT_ADC_CTL, LOW);
+#endif
+    for (int i = 0; i < 50; i++) // read 50 times and get average
+        temp += analogReadmV(pin);
+    volt = temp / 50;
+#if defined(CubeCell_Board) || defined(CubeCell_Capsule) || defined(CubeCell_BoardPlus) || defined(CubeCell_BoardPRO) || defined(CubeCell_GPS) || defined(CubeCell_HalfAA)
+    pinMode(VBAT_ADC_CTL, INPUT);
+#endif
+    volt = volt * 2;
+    return volt;
 }
 
 void OnTxDone( void )
