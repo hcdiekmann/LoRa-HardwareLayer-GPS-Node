@@ -1,5 +1,5 @@
 /* Author:        Hans Christian Diekmann
- * Last update:   04.05.2022
+ * Last update:   14.07.2022
  * Initial start: 03.05.2022
  *
  * Function:
@@ -12,13 +12,18 @@
  *
  *
  * */
-#include "Arduino.h"
+
 #include "LoRaWan_APP.h"
 #include <TinyGPSPlus.h>
 #include <softSerial.h>
 
-#ifndef RGB
-#define RGB 0
+
+// #define LORA_NSS    22 //or 39/P4.3 SPI slave select
+// #define LORA_RST    27 //or P5.7 SPI reset
+// #define LORA_BUSY   26 //or P4.7
+
+#ifndef NODE_ID
+#define NODE_ID     2 // to do: write the node id into EEPROM
 #endif
 
 #define RF_FREQUENCY                                868000000 // 868KHz for EU
@@ -45,6 +50,7 @@ typedef enum
     LOWPOWER,
     ReadVoltage,
     GetLocation,
+    StandbyRecharge,
     TX
 }States_t;
 
@@ -62,15 +68,12 @@ char txPacket[BUFFER_SIZE];
 bool sleepMode = false;
 int16_t rssi;
 uint16_t voltage;
-uint8_t noOfSatellites;
 float latitude,longitude,alti,velocity;
 
 void setup() {
     Serial.begin(115200);
-    Serial.println("Starting NODE");
+    Serial.println("Starting NODE: " + NODE_ID);
     gpsSerial.begin(GPS_BAUD);
-    pinMode(GPIO6, OUTPUT);
-    digitalWrite(GPIO6, HIGH);
     voltage = 0;
     rssi = 0;
 
@@ -97,100 +100,107 @@ void Main(){
       case TX:
       {
         turnOnRGB(COLOR_RXWINDOW2, 0); //yellow LED when starting TX
-        char str_lat[8],str_lon[8],str_alt[8],str_vel[8];
+        char str_alt[8],str_vel[8];
+        String str_lat = String (latitude, 6);
+        String str_lon = String (longitude, 6);
         /* mininum width 5, 2 is dec precision, float value is copied into str_var*/
-        dtostrf(latitude, 5, 2, str_lat);
-        dtostrf(longitude, 5, 2, str_lon);
         dtostrf(alti, 5, 2, str_alt);
-        dtostrf(velocity, 5, 2, str_vel);        
-        sprintf(txPacket,"Bat:%d,Lat:%s,Lon:%s,Alt:%s,Vel:%s", voltage,str_lat,str_lon,str_alt,str_vel);
+        dtostrf(velocity, 5, 2, str_vel);
+        uint8_t batPercent = map(voltage,3250,4250,0,100);      
+        sprintf(txPacket,"Id:%d,Bat:%d,Lat:%s,Lon:%s,Alt:%s,Vel:%s", NODE_ID, batPercent, str_lat.c_str(), str_lon.c_str(), str_alt, str_vel);
         Serial.printf("\r\nSending packet: \"%s\" , Length: %d\r\n",txPacket, strlen(txPacket));
         Radio.Send( (uint8_t *)txPacket, strlen(txPacket) );
         state = LOWPOWER;
         break;
       }
+
       case LOWPOWER:
       {
+        States_t prevState = state;
         lowPowerHandler();
-        delay(100);
         turnOffRGB();
-        delay(5000);  // LowPower time
-        state = ReadVoltage;
+        delay(30000);  // sleep interval time
+        state = (prevState == StandbyRecharge) ? StandbyRecharge : GetLocation;
         break;
       }
-      case ReadVoltage:
-      {
-        voltage = BoardGetBatteryVoltage();
-        Serial.printf("\nBattery: %d\n", voltage);
-        state = GetLocation;
-        break;
-      }
+
       case GetLocation:
       {
-        while (gpsSerial.available())     // check serial for new gps data
+        while (gpsSerial.available()) // check serial for new gps data
         {
-          gps.encode(gpsSerial.read()); // encode gps data
-          if (gps.location.isUpdated())   
+         // encode gps data
+          if ( gps.encode(gpsSerial.read()))   
           {
-            noOfSatellites = gps.satellites.value();
+            //Serial.print("Getting GPS data: ");
+            uint8_t noOfSatellites = gps.satellites.value();
             latitude = gps.location.lat();
             longitude = gps.location.lng();
             alti = gps.altitude.meters();
             velocity = gps.speed.mps();
 
-            Serial.print("SATS: ");
+        /*  Serial.print("SATS: ");
             Serial.println(noOfSatellites);
             Serial.print("LAT: ");
             Serial.println(latitude);
             Serial.print("LONG: ");
-            Serial.println(longitude);
+            Serial.println(longitude, 6);
             Serial.print("ALT: ");
             Serial.println(alti);
             Serial.print("SPEED: ");
             Serial.println(velocity);
-            Serial.println("---------------------------");
+            Serial.println("---------------------------"); */
           }
         }
-        state = TX;
+        state = ReadVoltage;
+        break;
+      }
+
+      case ReadVoltage:
+      {
+        voltage = BoardGetBatteryVoltage();
+        //Serial.printf("\nBattery: %d\n", voltage);
+        state = (voltage < 3250) ? StandbyRecharge : TX;
+        break;
+      }
+      case StandbyRecharge:
+      {
+        voltage = BoardGetBatteryVoltage();
+        state = (voltage > 3500) ? GetLocation : LOWPOWER;
         break;
       }
       default:
         break;
-    }
+  }
 }
 
-/*  get the BatteryVoltage in mV. */
+// get the BatteryVoltage in mV
 uint32_t BoardGetBatteryVoltage(void)
 {
     float temp = 0;
     uint16_t volt;
-    uint8_t pin;
-    pin = ADC;
-#if defined(CubeCell_Board) || defined(CubeCell_Capsule) || defined(CubeCell_BoardPlus) || defined(CubeCell_BoardPRO) || defined(CubeCell_GPS) || defined(CubeCell_HalfAA)
-    //Board, BoardPlus, etc. variants have external 10K VDD pullup resistor connected to GPIO7 (USER_KEY / VBAT_ADC_CTL) pin
+    uint8_t pin = ADC;
     pinMode(VBAT_ADC_CTL, OUTPUT);
     digitalWrite(VBAT_ADC_CTL, LOW);
-#endif
+
     for (int i = 0; i < 50; i++) // read 50 times and get average
         temp += analogReadmV(pin);
     volt = temp / 50;
-#if defined(CubeCell_Board) || defined(CubeCell_Capsule) || defined(CubeCell_BoardPlus) || defined(CubeCell_BoardPRO) || defined(CubeCell_GPS) || defined(CubeCell_HalfAA)
     pinMode(VBAT_ADC_CTL, INPUT);
-#endif
     volt = volt * 2;
     return volt;
 }
 
-void OnTxDone( void )
+// automatically called on successful transmit
+void OnTxDone(void)
 {
   Serial.print("Payload sent");
   turnOnRGB(COLOR_RECEIVED,0); // green LED when sent
 }
 
-void OnTxTimeout( void )
+// automatically called on transmit timeout
+void OnTxTimeout(void)
 {
-    turnOnRGB(COLOR_SEND,0); // red LED when timeout occurred
-    Radio.Sleep( );
-    Serial.print("TX Timeout");
-    state = ReadVoltage;
+  Serial.print("TX Timeout");
+  turnOnRGB(COLOR_SEND,0); // red LED when timeout occurred
+  Radio.Sleep( );
 }
