@@ -1,5 +1,5 @@
 /* Author:        Hans Christian Diekmann
- * Last update:   14.07.2022
+ * Last update:   26.02.2023
  * Initial start: 03.05.2022
  *
  * Function:
@@ -12,7 +12,7 @@
  *
  *
  * */
-
+#include "low_power.h"
 #include "LoRaWan_APP.h"
 #include <TinyGPSPlus.h>
 #include <softSerial.h>
@@ -23,7 +23,7 @@
 // #define LORA_BUSY   26 //or P4.7
 
 #ifndef NODE_ID
-#define NODE_ID     2 // to do: write the node id into EEPROM
+#define NODE_ID     1 // to do: write the node id into EEPROM
 #endif
 
 #define RF_FREQUENCY                                868000000 // 868KHz for EU
@@ -108,7 +108,7 @@ void Main(){
         dtostrf(velocity, 5, 2, str_vel);
         uint8_t batPercent = map(voltage,3250,4250,0,100);      
         sprintf(txPacket,"Id:%d,Bat:%d,Lat:%s,Lon:%s,Alt:%s,Vel:%s", NODE_ID, batPercent, str_lat.c_str(), str_lon.c_str(), str_alt, str_vel);
-        Serial.printf("\r\nSending packet: \"%s\" , Length: %d\r\n",txPacket, strlen(txPacket));
+        //Serial.printf("\r\nSending packet: \"%s\" , Length: %d\r\n",txPacket, strlen(txPacket));
         Radio.Send( (uint8_t *)txPacket, strlen(txPacket) );
         state = LOWPOWER;
         break;
@@ -119,7 +119,7 @@ void Main(){
         States_t prevState = state;
         lowPowerHandler();
         turnOffRGB();
-        delay(30000);  // sleep interval time
+        delay(300000);  // 600000 ms sleep interval time = 10min
         state = (prevState == StandbyRecharge) ? StandbyRecharge : GetLocation;
         break;
       }
@@ -193,14 +193,15 @@ uint32_t BoardGetBatteryVoltage(void)
 // automatically called on successful transmit
 void OnTxDone(void)
 {
-  Serial.print("Payload sent");
+  //Serial.print("Payload sent");
   turnOnRGB(COLOR_RECEIVED,0); // green LED when sent
+  Radio.Sleep( );
 }
 
 // automatically called on transmit timeout
 void OnTxTimeout(void)
 {
-  Serial.print("TX Timeout");
+  //Serial.print("TX Timeout");
   turnOnRGB(COLOR_SEND,0); // red LED when timeout occurred
   Radio.Sleep( );
 }
